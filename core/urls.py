@@ -11,6 +11,7 @@ urlpatterns = [
     path('admin/', admin.site.urls),
 
     path('api/admin/', include('admin_app.endpoints')),
+    path('api/classifieds/', include('classifieds_app.endpoints')),
     path('api/jobs/', include('job_handler_app.endpoints')),
     path('api/user/', include('user_app.endpoints')),
 
