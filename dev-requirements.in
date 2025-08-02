@@ -1,3 +1,4 @@
 -r requirements.in
 autopep8
 django-debug-toolbar
+Faker

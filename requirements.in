@@ -9,6 +9,7 @@ djangorestframework
 djangorestframework-simplejwt
 django-storages
 django-rq
+drf-base64
 freezegun
 gunicorn
 mock

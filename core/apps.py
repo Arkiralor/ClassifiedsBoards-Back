@@ -16,6 +16,7 @@ THIRD_PARTY_APPS = [
 
 CUSTOM_APPS = [
     'admin_app.apps.AdminAppConfig',
+    'classifieds_app.apps.ClassifiedsAppConfig',
     'communications_app.apps.CommunicationsAppConfig',
     'job_handler_app.apps.JobHandlerAppConfig',
     'middleware_app.apps.MiddlewareAppConfig',
