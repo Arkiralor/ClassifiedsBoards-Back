@@ -18,6 +18,7 @@ if DEBUG:
     INTERNAL_IPS = [ip[: ip.rfind(".")] + ".1" for ip in ips] + ["127.0.0.1", "10.0.2.2"]
 ENV_TYPE = environ.get("ENV_TYPE", "PROD").lower()
 MAX_ITEMS_PER_PAGE = 15
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 2048
 
 ALLOWED_HOSTS = environ.get("ALLOWED_HOSTS", "").split(", ")
 

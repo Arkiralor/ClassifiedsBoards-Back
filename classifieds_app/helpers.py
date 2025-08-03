@@ -47,7 +47,7 @@ class ClassifiedsCategoryHelper:
             logger.warning(resp.to_text())
             return resp
 
-        query = query.strip().lower()
+        query = query.lstrip().rstrip().lower()
         objs = objs.filter(
             Q(name__trigram_similar=query)
             | Q(description__trigram_similar=query)

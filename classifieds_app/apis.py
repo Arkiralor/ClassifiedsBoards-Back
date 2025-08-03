@@ -1,5 +1,5 @@
 from rest_framework.views import APIView
-from rest_framework.permissions import IsAuthenticated, IsAdminUser
+from rest_framework.permissions import IsAuthenticated, IsAdminUser, AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 
@@ -7,7 +7,7 @@ from classifieds_app.helpers import ClassifiedsCategoryHelper
 
 
 class ClassifiedsCategorySearchAPIView(APIView):
-    permission_classes = (IsAuthenticated,)
+    permission_classes = (IsAuthenticated | IsAdminUser | AllowAny,)
 
     def get(self, request: Request) -> Response:
         query = request.query_params.get('query', None)
