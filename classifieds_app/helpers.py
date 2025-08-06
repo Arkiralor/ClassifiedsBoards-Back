@@ -13,6 +13,7 @@ from classifieds_app.serializers import ClassifiedsAdvertisementCommentInputSeri
     ClassifiedsAdvertisementImageDisplaySerializer, ClassifiedsAdvertisementImageInputSerializer, ClassifiedsAdvertisementImageOutputSerializer, \
     ClassifiedsCategoryIOSerializer, UserAdvertisementLikeInputSerializer, UserAdvertisementLikeOutputSerializer, UserSavedAdvertisementInputSerializer, \
     UserSavedAdvertisementOutputSerializer
+from database.custom_orm_functions.weighted_trigram_similarity import WeightedTrigramSimilarity
 from user_app.models import User
 
 from classifieds_app import logger
@@ -52,9 +53,9 @@ class ClassifiedsCategoryHelper:
             Q(name__trigram_similar=query)
             | Q(description__trigram_similar=query)
         ).distinct().annotate(
-            similarity=TrigramSimilarity(
-                'name', query) + TrigramSimilarity('description', query)
-        ).order_by('similarity')
+            similarity=WeightedTrigramSimilarity(
+                'name', query, 1.0) + WeightedTrigramSimilarity('description', query, 1.0)
+        ).order_by('-similarity')
 
         if not objs:
             resp.error = f"NO CATEGORIES FOUND"
@@ -88,7 +89,7 @@ class ClassifiedsCategoryHelper:
 
         if category_id and not name and not category_id == StringConstants.BLANK:
             obj = ClassifiedsCategory.objects.filter(pk=category_id).first()
-            if not obj:
+            if not obj.exists():
                 resp.error = f"INVALID CATEGORY ID"
                 resp.message = f"Category with ID {category_id} does not exist."
                 resp.status_code = status.HTTP_404_NOT_FOUND
@@ -97,7 +98,7 @@ class ClassifiedsCategoryHelper:
                 return resp
         elif name and not category_id and not name == StringConstants.BLANK:
             obj = ClassifiedsCategory.objects.filter(name__iexact=name).first()
-            if not obj:
+            if not obj.exists():
                 resp.error = f"INVALID CATEGORY NAME"
                 resp.message = f"Category with name {name} does not exist."
                 resp.status_code = status.HTTP_404_NOT_FOUND
@@ -203,7 +204,7 @@ class ClassifiedsCategoryHelper:
                 return resp
 
         obj = cls.get(category_id=category_id, return_obj=True)
-        if not obj.error:
+        if obj.error:
             return obj
 
         deserialized = ClassifiedsCategoryIOSerializer(
@@ -299,6 +300,31 @@ class ClassifiedsAdvertisementHelper:
         return resp
 
     @classmethod
+    def list(cls, return_obj: bool = False, page_no: int = 1, *args, **kwargs) -> Resp:
+        resp = Resp()
+        objs: QuerySet[ClassifiedsAdvertisement] = ClassifiedsAdvertisement.objects.filter(
+            is_active=True).order_by('-created')
+
+        if not objs:
+            resp.error = f"NO ADVERTISEMENTS FOUND"
+            resp.message = f"No advertisements available."
+            resp.status_code = status.HTTP_404_NOT_FOUND
+
+            logger.warning(resp.to_text())
+            return resp
+
+        paginator = Paginator(objs, django_settings.MAX_ITEMS_PER_PAGE)
+        page = paginator.get_page(page_no)
+
+        resp.message = f"Advertisements found successfully."
+        resp.data = page if return_obj else ClassifiedsAdvertisementDisplaySerializer(
+            page, many=True).data
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
     def search(cls, query: str = None, return_obj: bool = False, page_no: int = 1, *args, **kwargs) -> Resp:
         resp = Resp()
 
@@ -330,10 +356,10 @@ class ClassifiedsAdvertisementHelper:
                 | Q(category__name__trigram_similar=query)
             )
         ).distinct().annotate(
-            similarity=(TrigramSimilarity('title', query) * 1.5)
-            + (TrigramSimilarity('description', query) * 1.2)
-            + (TrigramSimilarity('category__name', query) * 1.0)
-        ).order_by('similarity')
+            similarity=WeightedTrigramSimilarity('title', query, 1.5)
+            + WeightedTrigramSimilarity('description', query, 1.2)
+            + WeightedTrigramSimilarity('category__name', query, 1.0)
+        ).order_by('-similarity')
 
         paginated = Paginator(objs, django_settings.MAX_ITEMS_PER_PAGE)
         page = paginated.get_page(page_no)
@@ -375,7 +401,8 @@ class ClassifiedsAdvertisementHelper:
             data['category'] = create_category.data.id
 
         data['creator'] = user.id
-        data['is_active'] = False  # Default to inactive until approved by SITE moderators
+        # Default to inactive until approved by SITE moderators
+        data['is_active'] = False
         deserialized = ClassifiedsAdvertisementInputSerializer(data=data)
         if not deserialized.is_valid():
             resp.error = f"INVALID DATA"
@@ -387,8 +414,115 @@ class ClassifiedsAdvertisementHelper:
 
         deserialized.save()
         resp.message = f"Advertisement '{deserialized.data.get('title')}' created successfully."
-        resp.data = deserialized.instance if return_obj else ClassifiedsAdvertisementDisplaySerializer(deserialized.instance).data
+        resp.data = deserialized.instance if return_obj else ClassifiedsAdvertisementDisplaySerializer(
+            deserialized.instance).data
         resp.status_code = status.HTTP_201_CREATED
 
         logger.warning(resp.to_text())
+        return resp
+
+    def update(cls, user: User = None, pk: str = None, data: dict = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        resp = Resp()
+
+        if not user or not isinstance(user, User):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"User must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not pk or not isinstance(pk, str) or pk == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Advertisement ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not data or not isinstance(data, dict):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Data must be a dictionary."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        for key in data:
+            if key not in cls.EDITABLE_FIELDS:
+                resp.error = f"INVALID FIELD"
+                resp.message = f"Field '{key}' is not editable."
+                resp.status_code = status.HTTP_400_BAD_REQUEST
+
+                logger.warning(resp.to_text())
+                return resp
+
+        obj = cls.get_one(user=user, pk=pk, return_obj=True)
+        if obj.error:
+            return obj
+
+        if not obj.data.creator == user and not user in obj.data.moderators.all() and not user.is_superuser:
+            resp.error = f"UNAUTHORIZED"
+            resp.message = f"User is not authorized to update this advertisement."
+            resp.status_code = status.HTTP_403_FORBIDDEN
+
+            logger.warning(resp.to_text())
+            return resp
+
+        deserialized = ClassifiedsAdvertisementInputSerializer(
+            instance=obj.data, data=data, partial=True)
+        if not deserialized.is_valid():
+            resp.error = f"INVALID DATA"
+            resp.message = f"{deserialized.errors}"
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        deserialized.save()
+        resp.message = f"Advertisement '{deserialized.instance.title}' updated successfully."
+        resp.data = deserialized.instance if return_obj else ClassifiedsAdvertisementDisplaySerializer(
+            deserialized.instance).data
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
+    def delete(cls, user: User = None, pk: str = None, *args, **kwargs) -> Resp:
+        resp = Resp()
+
+        if not user or not isinstance(user, User):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"User must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not pk or not isinstance(pk, str) or pk == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Advertisement ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        obj = cls.get_one(user=user, pk=pk, return_obj=True)
+        if obj.error:
+            return obj
+
+        if not obj.data.creator == user and not user in obj.data.moderators.all() and not user.is_superuser:
+            resp.error = f"UNAUTHORIZED"
+            resp.message = f"User is not authorized to delete this advertisement."
+            resp.status_code = status.HTTP_403_FORBIDDEN
+
+            logger.warning(resp.to_text())
+            return resp
+
+        obj.data.delete()
+        resp.message = f"Advertisement '{pk}' deleted successfully."
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
         return resp
