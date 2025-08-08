@@ -69,11 +69,13 @@ class ClassifiedsAdvertisementImage(TemplateModel):
     class Meta:
         verbose_name = "Classifieds Advertisement Image"
         verbose_name_plural = "Classifieds Advertisement Images"
+        unique_together = ('advertisement', 'sequence_number')
         ordering = ("id", "sequence_number",)
         indexes = (
             models.Index(fields=('id',)),
             models.Index(fields=('advertisement',)),
         )
+        
 
 
 class ClassifiedsAdvertisementComment(TemplateModel):

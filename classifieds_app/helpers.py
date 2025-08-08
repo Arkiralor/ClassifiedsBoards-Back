@@ -1,3 +1,5 @@
+from base64 import b64encode, b64decode
+
 from django.conf import settings as django_settings
 from django.core.paginator import Paginator
 from django.db.models import QuerySet, Q
@@ -469,8 +471,7 @@ class ClassifiedsAdvertisementHelper:
             logger.warning(resp.to_text())
             return resp
 
-        deserialized = ClassifiedsAdvertisementInputSerializer(
-            instance=obj.data, data=data, partial=True)
+        deserialized = ClassifiedsAdvertisementInputSerializer(instance=obj.data, data=data, partial=True)
         if not deserialized.is_valid():
             resp.error = f"INVALID DATA"
             resp.message = f"{deserialized.errors}"
@@ -522,6 +523,325 @@ class ClassifiedsAdvertisementHelper:
 
         obj.data.delete()
         resp.message = f"Advertisement '{pk}' deleted successfully."
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+
+class ClassifiedsAdvertisementImageHelper:
+
+    EDITABLE_FIELDS = (
+        "title",
+        "alt_text",
+        "sequence_number",
+    )
+
+    @classmethod
+    def get_one(cls, pk: str = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        resp = Resp()
+        obj: ClassifiedsAdvertisementImage = None
+
+        if not pk or not isinstance(pk, str) or pk == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Image ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        obj = ClassifiedsAdvertisementImage.objects.filter(pk=pk).first()
+        if not obj:
+            resp.error = f"NOT FOUND"
+            resp.message = f"Image with ID {pk} does not exist."
+            resp.status_code = status.HTTP_404_NOT_FOUND
+
+            logger.warning(resp.to_text())
+            return resp
+
+        resp.message = f"Image found successfully."
+        resp.data = obj if return_obj else ClassifiedsAdvertisementImageDisplaySerializer(
+            obj).data
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
+    def get_for_advertisement(cls, advertisement_id: str = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        resp = Resp()
+        objs = ClassifiedsAdvertisementImage.objects.filter(
+            advertisement__id=advertisement_id).order_by('sequence_number')
+
+        if not objs:
+            resp.error = f"NO IMAGES FOUND"
+            resp.message = f"No images found for advertisement with ID {advertisement_id}."
+            resp.status_code = status.HTTP_404_NOT_FOUND
+
+            logger.warning(resp.to_text())
+            return resp
+
+        resp.message = f"Images found successfully for advertisement with ID {advertisement_id}."
+        resp.data = objs if return_obj else ClassifiedsAdvertisementImageDisplaySerializer(
+            objs, many=True).data
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
+    def create(cls, user: User = None, data: dict = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        resp = Resp()
+
+        if not user or not isinstance(user, User):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"User must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        advertisement_id = data.get('advertisement')
+        if not advertisement_id or not isinstance(advertisement_id, str) or advertisement_id == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Advertisement ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        advertisement = ClassifiedsAdvertisement.objects.filter(
+            pk=advertisement_id).first()
+        if not advertisement:
+            resp.error = f"NOT FOUND"
+            resp.message = f"Advertisement with ID {advertisement_id} does not exist."
+            resp.status_code = status.HTTP_404_NOT_FOUND
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not advertisement.creator == user and not user in advertisement.moderators.all() and not user.is_superuser:
+            resp.error = f"UNAUTHORIZED"
+            resp.message = f"User is not authorized to add images to this advertisement."
+            resp.status_code = status.HTTP_403_FORBIDDEN
+
+            logger.warning(resp.to_text())
+            return resp
+
+        deserialized = ClassifiedsAdvertisementImageInputSerializer(data=data)
+        if not deserialized.is_valid():
+            resp.error = f"INVALID DATA"
+            resp.message = f"{deserialized.errors}"
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        deserialized.save()
+
+        images = cls.get_for_advertisement(
+            advertisement_id=advertisement_id, return_obj=True)
+        if images.error:
+            return images
+
+        res = cls.reorder_images(
+            user=user, advertisement_id=advertisement_id, images=images.data, return_obj=True)
+        if res.error:
+            return res
+
+        resp.message = f"Image for advertisement '{advertisement.title}' created successfully."
+        resp.data = res.data if return_obj else ClassifiedsAdvertisementImageDisplaySerializer(
+            res.data, many=True).data
+        resp.status_code = status.HTTP_201_CREATED
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
+    def reorder_images(cls, user: User = None, advertisement_id: str = None, images: QuerySet[ClassifiedsAdvertisementImage] = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        """
+        Used to re-order the sequence numbers of images for a given advertisement.
+        This is useful when images are added or deleted, and the sequence numbers need to be updated
+        to maintain the correct order.
+        """
+        resp = Resp()
+
+        if not user or not isinstance(user, User):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"User must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not advertisement_id or not isinstance(advertisement_id, str) or advertisement_id == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Advertisement ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        advertisement = ClassifiedsAdvertisement.objects.filter(
+            pk=advertisement_id).first()
+        if not advertisement:
+            resp.error = f"NOT FOUND"
+            resp.message = f"Advertisement with ID {advertisement_id} does not exist."
+            resp.status_code = status.HTTP_404_NOT_FOUND
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not advertisement.creator == user and not user in advertisement.moderators.all() and not user.is_superuser:
+            resp.error = f"UNAUTHORIZED"
+            resp.message = f"User is not authorized to reorder images for this advertisement."
+            resp.status_code = status.HTTP_403_FORBIDDEN
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not images or not isinstance(images, QuerySet):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Images must be provided as a QuerySet."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        sequence_numbers = sorted([image.sequence_number for image in images])
+
+        for i, image in enumerate(images):
+            if image.sequence_number != (i+1):
+                if image.sequence_number in sequence_numbers:
+                    image.sequence_number -= i
+                    image.save()
+                else:
+                    image.sequence_number = sequence_numbers[-1]+1
+                    image.save()
+
+        resp.message = f"Images reordered for Advertisement #{advertisement_id}, successfully."
+        resp.data = images if return_obj else ClassifiedsAdvertisementImageDisplaySerializer(
+            images, many=True).data
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
+    def update(cls, user: User = None, pk: str = None, data: dict = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        resp = Resp()
+
+        if not user or not isinstance(user, User):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"User must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not pk or not isinstance(pk, str) or pk == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Image ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not data or not isinstance(data, dict):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Data must be a dictionary."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        for key in data:
+            if key not in cls.EDITABLE_FIELDS:
+                resp.error = f"INVALID FIELD"
+                resp.message = f"Field '{key}' is not editable."
+                resp.status_code = status.HTTP_400_BAD_REQUEST
+
+                logger.warning(resp.to_text())
+                return resp
+
+        obj = cls.get_one(pk=pk, return_obj=True)
+        if obj.error:
+            return obj
+
+        if not obj.data.advertisement.creator == user and not user in obj.data.advertisement.moderators.all() and not user.is_superuser:
+            resp.error = f"UNAUTHORIZED"
+            resp.message = f"User is not authorized to update this image."
+            resp.status_code = status.HTTP_403_FORBIDDEN
+
+            logger.warning(resp.to_text())
+            return resp
+
+        deserialized = ClassifiedsAdvertisementImageInputSerializer(
+            instance=obj.data, data=data, partial=True)
+        if not deserialized.is_valid():
+            resp.error = f"INVALID DATA"
+            resp.message = f"{deserialized.errors}"
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        deserialized.save()
+        resp.message = f"Image updated successfully."
+        resp.data = deserialized.instance if return_obj else ClassifiedsAdvertisementImageDisplaySerializer(
+            deserialized.instance).data
+        resp.status_code = status.HTTP_200_OK
+
+        logger.info(resp.to_text())
+        return resp
+
+    @classmethod
+    def delete(cls, user: User = None, pk: str = None, return_obj: bool = False, *args, **kwargs) -> Resp:
+        resp = Resp()
+
+        if not user or not isinstance(user, User):
+            resp.error = f"INVALID INPUT"
+            resp.message = f"User must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        if not pk or not isinstance(pk, str) or pk == StringConstants.BLANK:
+            resp.error = f"INVALID INPUT"
+            resp.message = f"Image ID must be provided."
+            resp.status_code = status.HTTP_400_BAD_REQUEST
+
+            logger.warning(resp.to_text())
+            return resp
+
+        obj = cls.get_one(pk=pk, return_obj=True)
+        if obj.error:
+            return obj
+
+        if not obj.data.advertisement.creator == user and not user in obj.data.advertisement.moderators.all() and not user.is_superuser:
+            resp.error = f"UNAUTHORIZED"
+            resp.message = f"User is not authorized to delete this image."
+            resp.status_code = status.HTTP_403_FORBIDDEN
+
+            logger.warning(resp.to_text())
+            return resp
+
+        obj.data.delete()
+
+        images = cls.get_for_advertisement(
+            advertisement_id=obj.data.advertisement.id, return_obj=True)
+        if images.error:
+            return images
+
+        res = cls.reorder_images(
+            user=user, advertisement_id=obj.data.advertisement.id, images=images.data, return_obj=True)
+        if res.error:
+            return res
+
+        resp.message = f"Image '{pk}' deleted successfully."
+        resp.data = res.data if return_obj else ClassifiedsAdvertisementImageDisplaySerializer(
+            res.data, many=True).data
         resp.status_code = status.HTTP_200_OK
 
         logger.info(resp.to_text())
